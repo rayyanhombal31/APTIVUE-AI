@@ -6,6 +6,7 @@ import { Sidebar } from './Sidebar'
 import { Overview } from '../pages/Overview'
 import { TargetJob } from '../pages/TargetJob'
 import { ResumeAnalysis } from '../pages/ResumeAnalysis'
+import { GithubAnalysis } from '../pages/GithubAnalysis'
 
 export default function AppShell() {
   const [activeId, setActiveId] = useState(NAV_ITEMS[0].id)
@@ -38,6 +39,8 @@ export default function AppShell() {
             <TargetJob />
           ) : activeId === 'resume-analysis' ? (
             <ResumeAnalysis onNavigate={handleSelect} />
+          ) : activeId === 'github-analysis' ? (
+            <GithubAnalysis onNavigate={handleSelect} />
           ) : (
             <PlaceholderPage item={active} />
           )}
