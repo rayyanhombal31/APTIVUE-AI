@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { NAV_ITEMS } from '../nav'
 import { Header } from './Header'
-import { Icon } from './Icon'
+import { PlaceholderPage } from './PlaceholderPage'
 import { Sidebar } from './Sidebar'
+import { Overview } from '../pages/Overview'
 
 export default function AppShell() {
   const [activeId, setActiveId] = useState(NAV_ITEMS[0].id)
@@ -29,26 +30,11 @@ export default function AppShell() {
           onMenuClick={() => setDrawerOpen(true)}
         />
         <main className="content">
-          <div className="page">
-            <header className="page__header">
-              <p className="page__eyebrow">APTIVUE AI</p>
-              <h1 className="page__title">{active.label}</h1>
-              <p className="page__desc">{active.description}</p>
-            </header>
-
-            <div className="page__placeholder">
-              <span className="page__placeholder-icon">
-                <Icon name={active.icon} size={28} />
-              </span>
-              <h2 className="page__placeholder-title">
-                This section is in progress
-              </h2>
-              <p className="page__placeholder-text">
-                The {active.label} experience will be built here in a later
-                phase.
-              </p>
-            </div>
-          </div>
+          {activeId === 'overview' ? (
+            <Overview onNavigate={handleSelect} />
+          ) : (
+            <PlaceholderPage item={active} />
+          )}
         </main>
       </div>
     </div>
