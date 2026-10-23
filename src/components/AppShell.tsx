@@ -5,6 +5,7 @@ import { PlaceholderPage } from './PlaceholderPage'
 import { Sidebar } from './Sidebar'
 import { Overview } from '../pages/Overview'
 import { TargetJob } from '../pages/TargetJob'
+import { ResumeAnalysis } from '../pages/ResumeAnalysis'
 
 export default function AppShell() {
   const [activeId, setActiveId] = useState(NAV_ITEMS[0].id)
@@ -35,6 +36,8 @@ export default function AppShell() {
             <Overview onNavigate={handleSelect} />
           ) : activeId === 'target-job' ? (
             <TargetJob />
+          ) : activeId === 'resume-analysis' ? (
+            <ResumeAnalysis onNavigate={handleSelect} />
           ) : (
             <PlaceholderPage item={active} />
           )}
