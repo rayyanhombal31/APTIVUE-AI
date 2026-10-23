@@ -21,6 +21,11 @@ export type IconName =
   | 'github'
   | 'search'
   | 'star'
+  | 'chevron-left'
+  | 'chevron-right'
+  | 'flag'
+  | 'mic'
+  | 'mic-off'
 
 const ICONS: Record<IconName, ReactElement> = {
   grid: (
@@ -154,6 +159,35 @@ const ICONS: Record<IconName, ReactElement> = {
   star: (
     <>
       <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+    </>
+  ),
+  'chevron-left': (
+    <>
+      <path d="m15 18-6-6 6-6" />
+    </>
+  ),
+  'chevron-right': (
+    <>
+      <path d="m9 18 6-6-6-6" />
+    </>
+  ),
+  flag: (
+    <>
+      <path d="M4 21V5a2 2 0 0 1 2-2h7" />
+      <rect x="6" y="5" width="12" height="8" rx="1" />
+    </>
+  ),
+  mic: (
+    <>
+      <path d="M12 19v-2a7 7 0 0 0-14-2v-2" />
+      <path d="M19 11v4a2 2 0 0 1-2 2h-2" />
+    </>
+  ),
+  'mic-off': (
+    <>
+      <path d="M1 1l22 22" />
+      <path d="M9 9v3a7 7 0 0 0 6 6" />
+      <path d="M15 9.34V4a2 2 0 0 1 2-2h2" />
     </>
   ),
 }
