@@ -9,6 +9,8 @@ import { ResumeAnalysis } from '../pages/ResumeAnalysis'
 import { GithubAnalysis } from '../pages/GithubAnalysis'
 import { MockInterview } from '../pages/MockInterview'
 import { SkillAnalytics } from '../pages/SkillAnalytics'
+import { LearningRoadmap } from '../pages/LearningRoadmap'
+import Profile from '../pages/Profile'
 
 export default function AppShell() {
   const [activeId, setActiveId] = useState(NAV_ITEMS[0].id)
@@ -47,6 +49,10 @@ export default function AppShell() {
             <MockInterview onNavigate={handleSelect} />
           ) : activeId === 'skill-analytics' ? (
             <SkillAnalytics onNavigate={handleSelect} />
+          ) : activeId === 'learning-roadmap' ? (
+            <LearningRoadmap />
+          ) : activeId === 'profile-settings' ? (
+            <Profile />
           ) : (
             <PlaceholderPage item={active} />
           )}
