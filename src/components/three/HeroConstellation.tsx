@@ -61,7 +61,9 @@ export function HeroConstellation() {
           nodes={nodes}
           accent={accent}
           activeId={activeId}
+          selectedId={null}
           onHover={setActiveId}
+          onSelect={() => {}}
           camera={{ position: [0, 0, 7.5], fov: 42 }}
           spinSpeed={0.1}
         />

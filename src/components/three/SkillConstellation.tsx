@@ -31,7 +31,9 @@ export function SkillConstellation() {
           nodes={nodes}
           accent={accent}
           activeId={activeId}
+          selectedId={null}
           onHover={setActiveId}
+          onSelect={() => {}}
         />
         <div className="constellation__hint">
           {activeSkill

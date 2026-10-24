@@ -8,6 +8,7 @@ import { TargetJob } from '../pages/TargetJob'
 import { ResumeAnalysis } from '../pages/ResumeAnalysis'
 import { GithubAnalysis } from '../pages/GithubAnalysis'
 import { MockInterview } from '../pages/MockInterview'
+import { SkillAnalytics } from '../pages/SkillAnalytics'
 
 export default function AppShell() {
   const [activeId, setActiveId] = useState(NAV_ITEMS[0].id)
@@ -44,6 +45,8 @@ export default function AppShell() {
             <GithubAnalysis onNavigate={handleSelect} />
           ) : activeId === 'mock-interview' ? (
             <MockInterview onNavigate={handleSelect} />
+          ) : activeId === 'skill-analytics' ? (
+            <SkillAnalytics onNavigate={handleSelect} />
           ) : (
             <PlaceholderPage item={active} />
           )}
