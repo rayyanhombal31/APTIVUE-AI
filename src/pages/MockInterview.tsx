@@ -1,7 +1,20 @@
 import { useState } from 'react'
 import { Icon } from '../components/Icon'
-import { getQuestions } from '../data/interview'
-import type { InterviewConfig, Question, InterviewDifficulty, InterviewLength, InterviewType } from '../data/interview'
+import {
+  getQuestions,
+  fetchInterviewQuestions,
+  createInterviewSession,
+  saveInterviewAnswer,
+  evaluateInterviewSession,
+} from '../data/interview'
+import type {
+  InterviewConfig,
+  Question,
+  InterviewDifficulty,
+  InterviewLength,
+  InterviewType,
+  InterviewEvaluation,
+} from '../data/interview'
 import { loadTargetJob } from '../data/targetJob'
 import type { TargetJobData } from '../data/targetJob'
 
@@ -14,6 +27,15 @@ type Screen = 'setup' | 'interview' | 'complete' | 'feedback'
 export function MockInterview({ onNavigate }: MockInterviewProps) {
   const [targetJob] = useState<TargetJobData | null>(() => loadTargetJob())
   const [screen, setScreen] = useState<Screen>('setup')
+  const [loading, setLoading] = useState(false)
+  const [isAiGenerated, setIsAiGenerated] = useState(false)
+  const [statusMessage, setStatusMessage] = useState<string | null>(null)
+
+  // PostgreSQL session & evaluation state
+  const [sessionId, setSessionId] = useState<number | null>(null)
+  const [evaluation, setEvaluation] = useState<InterviewEvaluation | null>(null)
+  const [evaluating, setEvaluating] = useState(false)
+  const [evaluationError, setEvaluationError] = useState<string | null>(null)
   
   // Setup configuration state
   const [config, setConfig] = useState<InterviewConfig>({
@@ -30,23 +52,65 @@ export function MockInterview({ onNavigate }: MockInterviewProps) {
   const [currentText, setCurrentText] = useState('')
   const [validationError, setValidationError] = useState<string | null>(null)
 
-  const handleStart = () => {
-    const list = getQuestions(config.type, config.length)
-    setQuestions(list)
-    setCurrentIndex(0)
-    setAnswers({})
-    setSubmitted({})
-    setCurrentText('')
-    setValidationError(null)
-    setScreen('interview')
+  const handleStart = async () => {
+    setLoading(true)
+    setStatusMessage(null)
+    setSessionId(null)
+    setEvaluation(null)
+    try {
+      const result = await fetchInterviewQuestions(config, targetJob)
+      let currentQuestions = result.questions
+      let currentSessionId: number | null = null
+
+      // Persist session to PostgreSQL
+      try {
+        const sessionRes = await createInterviewSession(config, currentQuestions, targetJob)
+        if (sessionRes.sessionId) {
+          currentSessionId = sessionRes.sessionId
+          currentQuestions = sessionRes.questions
+        }
+      } catch (dbErr) {
+        console.warn('Session persistence skipped:', dbErr)
+      }
+
+      setSessionId(currentSessionId)
+      setQuestions(currentQuestions)
+      setIsAiGenerated(result.isAiGenerated)
+      if (!result.isAiGenerated) {
+        setStatusMessage('AI service was temporarily unavailable; loaded questions from offline fallback bank.')
+      }
+      setCurrentIndex(0)
+      setAnswers({})
+      setSubmitted({})
+      setCurrentText('')
+      setValidationError(null)
+      setScreen('interview')
+    } catch {
+      const list = getQuestions(config.type, config.length)
+      setQuestions(list)
+      setIsAiGenerated(false)
+      setCurrentIndex(0)
+      setAnswers({})
+      setSubmitted({})
+      setCurrentText('')
+      setValidationError(null)
+      setScreen('interview')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const handleSelectQuestion = (index: number) => {
     // Save current text into answers temporarily if editing
     if (questions[currentIndex]) {
-      const qId = questions[currentIndex].id
+      const q = questions[currentIndex]
+      const qId = q.id
       if (currentText.trim()) {
         setAnswers((prev) => ({ ...prev, [qId]: currentText }))
+        if (sessionId) {
+          const dbQId = q.dbId ?? q.id
+          saveInterviewAnswer(sessionId, dbQId, currentText).catch(() => {})
+        }
       }
     }
     setCurrentIndex(index)
@@ -61,10 +125,17 @@ export function MockInterview({ onNavigate }: MockInterviewProps) {
       return
     }
     setValidationError(null)
-    const qId = questions[currentIndex].id
-    setAnswers((prev) => ({ ...prev, [qId]: currentText }))
-    if (isFinalForQuestion) {
-      setSubmitted((prev) => ({ ...prev, [qId]: true }))
+    const q = questions[currentIndex]
+    if (q) {
+      const qId = q.id
+      setAnswers((prev) => ({ ...prev, [qId]: currentText }))
+      if (isFinalForQuestion) {
+        setSubmitted((prev) => ({ ...prev, [qId]: true }))
+      }
+      if (sessionId) {
+        const dbQId = q.dbId ?? q.id
+        saveInterviewAnswer(sessionId, dbQId, currentText).catch(() => {})
+      }
     }
   }
 
@@ -90,6 +161,36 @@ export function MockInterview({ onNavigate }: MockInterviewProps) {
   const handlePrev = () => {
     if (currentIndex > 0) {
       handleSelectQuestion(currentIndex - 1)
+    }
+  }
+
+  const handleViewFeedback = async () => {
+    setScreen('feedback')
+    if (evaluation || !sessionId) {
+      return
+    }
+
+    setEvaluating(true)
+    setEvaluationError(null)
+    try {
+      const answerPayload: Record<number, string> = {}
+      questions.forEach((q) => {
+        const text = answers[q.id]
+        if (text && text.trim().length > 0) {
+          const targetKey = q.dbId ?? q.id
+          answerPayload[targetKey] = text
+        }
+      })
+
+      const result = await evaluateInterviewSession(sessionId, answerPayload)
+      if (result) {
+        setEvaluation(result)
+      }
+    } catch (err: any) {
+      console.warn('Failed to load real AI evaluation:', err)
+      setEvaluationError('Could not load AI evaluation; displaying baseline evaluation.')
+    } finally {
+      setEvaluating(false)
     }
   }
 
@@ -222,14 +323,31 @@ export function MockInterview({ onNavigate }: MockInterviewProps) {
             </div>
           </div>
 
-          <div className="setup-actions">
+          <div className="setup-actions" style={{ alignItems: 'center', gap: 'var(--space-3)' }}>
+            {statusMessage && (
+              <span className="field__error" role="status" style={{ marginRight: 'auto' }}>
+                {statusMessage}
+              </span>
+            )}
+            {loading && (
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-faint)' }}>
+                Generating dynamic questions via AI...
+              </span>
+            )}
             <button
               type="button"
               className="btn btn--primary btn--lg"
               onClick={handleStart}
+              disabled={loading}
             >
-              Start Interview
-              <Icon name="arrow-right" size={16} />
+              {loading ? (
+                'Generating Questions...'
+              ) : (
+                <>
+                  Start Interview
+                  <Icon name="arrow-right" size={16} />
+                </>
+              )}
             </button>
           </div>
         </section>
@@ -242,6 +360,9 @@ export function MockInterview({ onNavigate }: MockInterviewProps) {
             <div className="interview-meta">
               <span className="badge">{config.type}</span>
               <span className="badge">{config.difficulty}</span>
+              <span className={`sample-tag${isAiGenerated ? ' sample-tag--success' : ''}`}>
+                {isAiGenerated ? 'AI Generated' : 'Offline Bank'}
+              </span>
               <span className="interview-counter">
                 Question {currentIndex + 1} of {questions.length}
               </span>
@@ -382,6 +503,10 @@ export function MockInterview({ onNavigate }: MockInterviewProps) {
               <strong>{config.difficulty}</strong>
             </div>
             <div className="complete-summary__row">
+              <span>Question Source</span>
+              <strong>{isAiGenerated ? 'FreeLLMAPI AI' : 'Offline Bank'}</strong>
+            </div>
+            <div className="complete-summary__row">
               <span>Questions Answered</span>
               <strong>
                 {answeredCount} / {questions.length}
@@ -397,9 +522,10 @@ export function MockInterview({ onNavigate }: MockInterviewProps) {
             <button
               type="button"
               className="btn btn--primary"
-              onClick={() => setScreen('feedback')}
+              onClick={handleViewFeedback}
+              disabled={evaluating}
             >
-              View Demo Feedback
+              {evaluating ? 'Analyzing Answers with AI...' : 'View AI Evaluation'}
             </button>
             <button
               type="button"
@@ -423,72 +549,149 @@ export function MockInterview({ onNavigate }: MockInterviewProps) {
             >
               Back to Summary
             </button>
-            <span className="sample-tag">Demo / Sample Feedback</span>
+            <span className={`sample-tag${evaluation ? ' sample-tag--success' : ''}`}>
+              {evaluating ? 'Evaluating...' : (evaluation ? 'AI Evaluated' : 'Sample Feedback')}
+            </span>
           </div>
 
-          <section className="github-card feedback-score-card">
-            <div className="feedback-score__main">
-              <span className="feedback-score__num">82</span>
-              <span className="feedback-score__max">/ 100</span>
-            </div>
-            <div className="feedback-score__details">
-              <h2 className="github-card__title">Overall Demo Evaluation</h2>
-              <p className="feedback-score__note">
-                Simulated heuristic score based on response length and keyword coverage.
+          {evaluating ? (
+            <section className="github-card" style={{ textAlign: 'center', padding: 'var(--space-8)' }}>
+              <h2 className="github-card__title" style={{ marginBottom: 'var(--space-2)' }}>
+                Evaluating Your Answers with AI...
+              </h2>
+              <p style={{ color: 'var(--text-faint)' }}>
+                FreeLLMAPI is evaluating your technical depth, accuracy, and communication clarity against PostgreSQL-persisted answers.
               </p>
-            </div>
-          </section>
+            </section>
+          ) : evaluation ? (
+            <>
+              <section className="github-card feedback-score-card">
+                <div className="feedback-score__main">
+                  <span className="feedback-score__num">{Math.round(evaluation.overallScore)}</span>
+                  <span className="feedback-score__max">/ 100</span>
+                </div>
+                <div className="feedback-score__details">
+                  <h2 className="github-card__title">Overall AI Evaluation</h2>
+                  <p className="feedback-score__note">
+                    {evaluation.summary}
+                  </p>
+                </div>
+              </section>
 
-          <div className="resume-grid">
-            <section className="github-card">
-              <h2 className="github-card__title">Sub-Scores</h2>
-              <div className="subscores-list">
-                <div className="subscore-row">
-                  <span>Communication Clarity</span>
-                  <strong>85%</strong>
-                </div>
-                <div className="subscore-row">
-                  <span>Technical Relevance</span>
-                  <strong>78%</strong>
-                </div>
-                <div className="subscore-row">
-                  <span>Answer Structure (STAR / Logical)</span>
-                  <strong>83%</strong>
-                </div>
+              <div className="resume-grid">
+                <section className="github-card">
+                  <h2 className="github-card__title">Sub-Scores</h2>
+                  <div className="subscores-list">
+                    <div className="subscore-row">
+                      <span>Communication Clarity</span>
+                      <strong>{Math.round(evaluation.communicationScore)}%</strong>
+                    </div>
+                    <div className="subscore-row">
+                      <span>Technical Relevance</span>
+                      <strong>{Math.round(evaluation.technicalScore)}%</strong>
+                    </div>
+                    <div className="subscore-row">
+                      <span>Answer Structure (STAR / Logical)</span>
+                      <strong>{Math.round(evaluation.structureScore)}%</strong>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="github-card">
+                  <h2 className="github-card__title">Key Strengths</h2>
+                  <ul className="resume-gaps__list">
+                    {evaluation.strengths.map((str, idx) => (
+                      <li key={idx} className="resume-gaps__item">
+                        <Icon name="check" size={15} />
+                        {str}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
               </div>
-            </section>
 
-            <section className="github-card">
-              <h2 className="github-card__title">Key Strengths</h2>
-              <ul className="resume-gaps__list">
-                <li className="resume-gaps__item">
-                  <Icon name="check" size={15} />
-                  Clear breakdown of technical trade-offs.
-                </li>
-                <li className="resume-gaps__item">
-                  <Icon name="check" size={15} />
-                  Good usage of structured examples.
-                </li>
-              </ul>
-            </section>
-          </div>
+              <section className="github-card">
+                <div className="github-card__head">
+                  <h2 className="github-card__title">Areas for Improvement & Suggestions</h2>
+                  <span className="sample-tag sample-tag--success">AI Recommendations</span>
+                </div>
+                <ul className="resume-gaps__list">
+                  {evaluation.weaknesses.concat(evaluation.suggestions).slice(0, 4).map((w, idx) => (
+                    <li key={idx} className="resume-gaps__item">
+                      <Icon name="alert" size={15} />
+                      {w}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            </>
+          ) : (
+            <>
+              <section className="github-card feedback-score-card">
+                <div className="feedback-score__main">
+                  <span className="feedback-score__num">82</span>
+                  <span className="feedback-score__max">/ 100</span>
+                </div>
+                <div className="feedback-score__details">
+                  <h2 className="github-card__title">Overall Demo Evaluation</h2>
+                  <p className="feedback-score__note">
+                    {evaluationError || 'Simulated heuristic score based on response length and keyword coverage.'}
+                  </p>
+                </div>
+              </section>
 
-          <section className="github-card">
-            <div className="github-card__head">
-              <h2 className="github-card__title">Areas for Improvement</h2>
-              <span className="sample-tag">Sample data</span>
-            </div>
-            <ul className="resume-gaps__list">
-              <li className="resume-gaps__item">
-                <Icon name="alert" size={15} />
-                Expand more on edge-case error handling in technical answers.
-              </li>
-              <li className="resume-gaps__item">
-                <Icon name="alert" size={15} />
-                Quantify impact and metrics more clearly in behavioral examples.
-              </li>
-            </ul>
-          </section>
+              <div className="resume-grid">
+                <section className="github-card">
+                  <h2 className="github-card__title">Sub-Scores</h2>
+                  <div className="subscores-list">
+                    <div className="subscore-row">
+                      <span>Communication Clarity</span>
+                      <strong>85%</strong>
+                    </div>
+                    <div className="subscore-row">
+                      <span>Technical Relevance</span>
+                      <strong>78%</strong>
+                    </div>
+                    <div className="subscore-row">
+                      <span>Answer Structure (STAR / Logical)</span>
+                      <strong>83%</strong>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="github-card">
+                  <h2 className="github-card__title">Key Strengths</h2>
+                  <ul className="resume-gaps__list">
+                    <li className="resume-gaps__item">
+                      <Icon name="check" size={15} />
+                      Clear breakdown of technical trade-offs.
+                    </li>
+                    <li className="resume-gaps__item">
+                      <Icon name="check" size={15} />
+                      Good usage of structured examples.
+                    </li>
+                  </ul>
+                </section>
+              </div>
+
+              <section className="github-card">
+                <div className="github-card__head">
+                  <h2 className="github-card__title">Areas for Improvement</h2>
+                  <span className="sample-tag">Sample data</span>
+                </div>
+                <ul className="resume-gaps__list">
+                  <li className="resume-gaps__item">
+                    <Icon name="alert" size={15} />
+                    Expand more on edge-case error handling in technical answers.
+                  </li>
+                  <li className="resume-gaps__item">
+                    <Icon name="alert" size={15} />
+                    Quantify impact and metrics more clearly in behavioral examples.
+                  </li>
+                </ul>
+              </section>
+            </>
+          )}
         </div>
       )}
     </div>

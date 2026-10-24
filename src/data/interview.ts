@@ -1,3 +1,5 @@
+import type { TargetJobData } from './targetJob'
+
 export type InterviewType = 'Technical' | 'Behavioral' | 'Mixed'
 export type InterviewDifficulty = 'Beginner' | 'Intermediate' | 'Advanced'
 export type InterviewLength = 5 | 10
@@ -12,6 +14,26 @@ export interface Question {
   id: number
   prompt: string
   hint: string
+  dbId?: number
+}
+
+export interface InterviewEvaluation {
+  id?: number
+  sessionId?: number
+  overallScore: number
+  communicationScore: number
+  technicalScore: number
+  structureScore: number
+  strengths: string[]
+  weaknesses: string[]
+  suggestions: string[]
+  summary: string
+}
+
+export interface FetchQuestionsResult {
+  questions: Question[]
+  isAiGenerated: boolean
+  error?: string
 }
 
 const QUESTION_BANK: Record<InterviewType, Question[]> = {
@@ -206,4 +228,175 @@ const QUESTION_BANK: Record<InterviewType, Question[]> = {
 export function getQuestions(type: InterviewType, length: InterviewLength): Question[] {
   const bank = QUESTION_BANK[type] || QUESTION_BANK.Technical
   return bank.slice(0, length)
+}
+
+/**
+ * Dynamically fetches interview questions from the APTIVUE AI backend,
+ * with automatic fallback to the local static question bank.
+ */
+export async function fetchInterviewQuestions(
+  config: InterviewConfig,
+  targetJob?: TargetJobData | null
+): Promise<FetchQuestionsResult> {
+  const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:3001').replace(/\/+$/, '')
+  const endpoint = `${apiUrl}/api/ai/generate-questions`
+
+  try {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 45000)
+
+    const payload = {
+      type: config.type,
+      difficulty: config.difficulty,
+      length: config.length,
+      jobRole: targetJob?.title || undefined,
+      targetJob: targetJob || undefined,
+    }
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+
+    clearTimeout(timeoutId)
+
+    if (!response.ok) {
+      throw new Error(`Backend returned status ${response.status}`)
+    }
+
+    const data = await response.json()
+
+    if (data?.success && Array.isArray(data?.questions) && data.questions.length > 0) {
+      const validated: Question[] = data.questions.map((q: any, idx: number) => ({
+        id: typeof q.id === 'number' ? q.id : idx + 1,
+        prompt: String(q.prompt || `Question ${idx + 1}`),
+        hint: String(q.hint || ''),
+      }))
+      return {
+        questions: validated,
+        isAiGenerated: true,
+      }
+    }
+
+    throw new Error('Invalid response structure from question generation endpoint')
+  } catch (error) {
+    console.warn('AI question generation unavailable or failed; using offline fallback bank:', error)
+    return {
+      questions: getQuestions(config.type, config.length),
+      isAiGenerated: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }
+  }
+}
+
+/**
+ * Persists an interview session with its questions to PostgreSQL.
+ */
+export async function createInterviewSession(
+  config: InterviewConfig,
+  questions: Question[],
+  targetJob?: TargetJobData | null
+): Promise<{ sessionId: number | null; questions: Question[] }> {
+  const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:3001').replace(/\/+$/, '')
+  try {
+    const res = await fetch(`${apiUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jobRole: targetJob?.title || 'Software Engineer',
+        type: config.type,
+        difficulty: config.difficulty,
+        status: 'in_progress',
+        questions: questions.map((q) => ({
+          prompt: q.prompt,
+          hint: q.hint,
+          order: q.id,
+        })),
+      }),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    if (data?.success && data?.session?.id) {
+      const dbQuestions: Question[] = (data.session.questions || []).map((dq: any, idx: number) => ({
+        id: idx + 1,
+        dbId: dq.id,
+        prompt: dq.prompt,
+        hint: dq.hint,
+      }))
+      return {
+        sessionId: data.session.id,
+        questions: dbQuestions.length > 0 ? dbQuestions : questions,
+      }
+    }
+  } catch (err) {
+    console.warn('Could not persist interview session to database, using local state:', err)
+  }
+  return { sessionId: null, questions }
+}
+
+/**
+ * Persists a candidate's answer to PostgreSQL.
+ */
+export async function saveInterviewAnswer(
+  sessionId: number,
+  questionId: number,
+  answerText: string
+): Promise<boolean> {
+  const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:3001').replace(/\/+$/, '')
+  try {
+    const res = await fetch(`${apiUrl}/api/sessions/${sessionId}/answers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        questionId,
+        answerText,
+      }),
+    })
+    return res.ok
+  } catch (err) {
+    console.warn('Failed to save answer to backend:', err)
+    return false
+  }
+}
+
+/**
+ * Requests an AI evaluation of the session's answers using FreeLLMAPI,
+ * persisted into PostgreSQL.
+ */
+export async function evaluateInterviewSession(
+  sessionId: number,
+  answers: Record<number, string>
+): Promise<InterviewEvaluation | null> {
+  const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:3001').replace(/\/+$/, '')
+  try {
+    const res = await fetch(`${apiUrl}/api/sessions/${sessionId}/evaluate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers }),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    if (data?.success && data?.evaluation) {
+      const e = data.evaluation
+      return {
+        id: e.id,
+        sessionId: e.session_id,
+        overallScore: Number(e.overall_score) || 0,
+        communicationScore: Number(e.communication_score) || 0,
+        technicalScore: Number(e.technical_score) || 0,
+        structureScore: Number(e.structure_score) || 0,
+        strengths: typeof e.strengths === 'string' ? JSON.parse(e.strengths) : (Array.isArray(e.strengths) ? e.strengths : []),
+        weaknesses: typeof e.weaknesses === 'string' ? JSON.parse(e.weaknesses) : (Array.isArray(e.weaknesses) ? e.weaknesses : []),
+        suggestions: typeof e.suggestions === 'string' ? JSON.parse(e.suggestions) : (Array.isArray(e.suggestions) ? e.suggestions : []),
+        summary: String(e.summary || ''),
+      }
+    }
+  } catch (err) {
+    console.error('Failed to evaluate interview session with AI:', err)
+  }
+  return null
 }
